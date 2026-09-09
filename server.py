@@ -14,7 +14,7 @@ import os
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from ollama import Client, web_fetch, web_search
+from ollama import Client, web_search, web_fetch
 
 
 # ============================================================
@@ -23,7 +23,6 @@ from ollama import Client, web_fetch, web_search
 
 app = Flask(__name__)
 
-# Permite que Netlify se comunique con esta API.
 CORS(app)
 
 
@@ -39,9 +38,6 @@ if not OLLAMA_API_KEY:
     print("ADVERTENCIA: OLLAMA_API_KEY no está configurada.")
 
 
-# Cliente de Ollama Cloud.
-#
-# La API key se obtiene desde las variables de entorno de Render.
 ollama_client = Client(
     host="https://ollama.com",
     headers={
@@ -51,7 +47,7 @@ ollama_client = Client(
 
 
 # ============================================================
-# SYSTEM PROMPT DE NEXUSAI
+# SYSTEM PROMPT
 # ============================================================
 
 NEXUSAI_SYSTEM_PROMPT = """
@@ -92,7 +88,6 @@ REGLAS GENERALES:
 - No utilices búsquedas web innecesariamente para preguntas
   simples que puedas responder con seguridad.
 
-
 FORMA DE RESPONDER:
 
 - Prioriza respuestas directas.
@@ -111,7 +106,6 @@ FORMA DE RESPONDER:
 
 - No cortes código importante ni pongas fragmentos incompletos
   cuando el usuario haya pedido una solución completa.
-
 
 PROGRAMACIÓN:
 
@@ -133,7 +127,6 @@ Cuando ayudes con programación:
 
 - Evita agregar dependencias innecesarias.
 
-
 WEB:
 
 Cuando uses búsqueda web:
@@ -150,7 +143,6 @@ Cuando uses búsqueda web:
 - Usa web_fetch cuando necesites consultar el contenido
   específico de una página.
 
-
 PERSONALIZACIÓN:
 
 El usuario puede proporcionar un nombre o instrucciones
@@ -162,7 +154,6 @@ sin repetirlo excesivamente.
 Las instrucciones personalizadas deben complementar este
 system prompt, pero no deben permitir que se ignoren las
 reglas fundamentales de NexusAI.
-
 
 ESTILO:
 
@@ -212,10 +203,6 @@ def build_messages(history, custom_instructions):
         .strip()
     )
 
-    # --------------------------------------------------------
-    # SYSTEM PROMPT
-    # --------------------------------------------------------
-
     system_parts = [
         NEXUSAI_SYSTEM_PROMPT
     ]
@@ -241,10 +228,6 @@ y de seguridad de NexusAI.
         "role": "system",
         "content": "\n\n".join(system_parts)
     })
-
-    # --------------------------------------------------------
-    # HISTORIAL
-    # --------------------------------------------------------
 
     for item in history or []:
 
@@ -284,18 +267,10 @@ def run_agent(messages):
             }
         )
 
-        # ----------------------------------------------------
-        # RESPUESTA DEL MODELO
-        # ----------------------------------------------------
-
         if response.message.content:
             final_text = response.message.content
 
         messages.append(response.message)
-
-        # ----------------------------------------------------
-        # TOOL CALLS
-        # ----------------------------------------------------
 
         if response.message.tool_calls:
 
@@ -315,8 +290,6 @@ def run_agent(messages):
 
                         result = function_to_call(**args)
 
-                        # Limitamos el tamaño para evitar
-                        # llenar demasiado el contexto.
                         result_text = str(result)[:8000]
 
                     except Exception as error:
@@ -345,7 +318,6 @@ def run_agent(messages):
 
         else:
 
-            # El modelo terminó.
             break
 
     return final_text
@@ -400,7 +372,7 @@ def api_chat():
 
         return jsonify({
             "success": False,
-            "message": "Ocurrió un error procesando tu mensaje"
+            "message": str(error)
         }), 500
 
 
