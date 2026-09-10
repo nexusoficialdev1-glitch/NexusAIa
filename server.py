@@ -22,6 +22,7 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from ollama import Client, web_search, web_fetch
+from urllib.parse import quote
 
 
 # ============================================================
@@ -131,6 +132,25 @@ IDENTIDAD DE NEXUSAI:
   ApexAI, dilo claramente.
 - No afirmes tener capacidades que no tienes.
 - No atribuyas a ApexAI funciones que no esten disponibles.
+
+BUSQUEDA DE IMAGENES:
+
+Si el usuario solicita buscar, encontrar o mostrar imágenes,
+utiliza la herramienta image_search.
+
+Ejemplos:
+
+- "busca una imagen de un gato"
+- "muéstrame imágenes de Ferrari"
+- "encuentra fotos de Caracas"
+- "quiero ver imágenes de Windows 11"
+
+Cuando utilices image_search:
+
+- No escribas las URLs de las imágenes directamente al usuario.
+- La aplicación mostrará las imágenes mediante los resultados
+  estructurados de la herramienta.
+- Puedes responder brevemente indicando que encontraste imágenes.
 
 OBJETIVO:
 
@@ -540,6 +560,78 @@ def youtube_fetch(url: str) -> str:
             f"de YouTube. Error tecnico: {error}"
         )
 
+def image_search(query: str, max_results: int = 6):
+    """
+    Busca imágenes y devuelve resultados estructurados.
+    """
+
+    try:
+        # Usamos una búsqueda de imágenes de Bing mediante su endpoint
+        # HTML y extraemos las URLs disponibles.
+        search_url = (
+            "https://www.bing.com/images/search"
+            f"?q={quote(query)}"
+        )
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
+            )
+        }
+
+        response = requests.get(
+            search_url,
+            headers=headers,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        html = response.text
+
+        results = []
+
+        # Bing contiene los resultados en bloques con metadatos JSON.
+        matches = re.findall(
+            r'murl&quot;:&quot;(.*?)&quot;',
+            html
+        )
+
+        for image_url in matches:
+
+            image_url = (
+                image_url
+                .replace("\\/", "/")
+                .replace("&amp;", "&")
+            )
+
+            if not image_url.startswith("http"):
+                continue
+
+            if image_url not in [
+                item["url"] for item in results
+            ]:
+
+                results.append({
+                    "url": image_url,
+                    "title": query
+                })
+
+            if len(results) >= max_results:
+                break
+
+        return results
+
+    except Exception as error:
+
+        print(
+            "Error buscando imágenes:",
+            repr(error)
+        )
+
+        return []
+
 
 # ============================================================
 # HERRAMIENTAS
@@ -548,7 +640,8 @@ def youtube_fetch(url: str) -> str:
 available_tools = {
     "web_search": web_search,
     "web_fetch": web_fetch,
-    "youtube_fetch": youtube_fetch
+    "youtube_fetch": youtube_fetch,
+    "image_search": image_search
 }
 
 
@@ -636,11 +729,13 @@ PREFERENCIAS DEL USUARIO:
 def run_agent(messages):
 
     final_text = ""
+    image_results = []
 
     tools = [
         web_search,
         web_fetch,
-        youtube_fetch
+        youtube_fetch,
+        image_search
     ]
 
     while True:
@@ -681,6 +776,10 @@ def run_agent(messages):
                             **args
                         )
 
+                        if function_name == "image_search":
+    if isinstance(result, list):
+        image_results.extend(result)
+
                         result_text = str(
                             result
                         )[:12000]
@@ -709,7 +808,10 @@ def run_agent(messages):
 
             break
 
-    return final_text
+    return {
+    "text": final_text,
+    "images": image_results[:12]
+}
 
 
 # ============================================================
@@ -750,14 +852,15 @@ def api_chat():
                 "message": "No hay mensajes para procesar"
             }), 400
 
-        final_text = run_agent(
-            messages
-        )
+        result = run_agent(
+    messages
+)
 
-        return jsonify({
-            "success": True,
-            "response": final_text
-        })
+return jsonify({
+    "success": True,
+    "response": result["text"],
+    "images": result["images"]
+})
 
     except Exception as error:
 
