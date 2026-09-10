@@ -2,20 +2,26 @@
 NexusAI — server.py
 
 Backend del chatbot de NexusAI.
+
 Preparado para:
 - Render
 - Ollama Cloud
-- gpt-oss:20b-cloud
-- Web Search / Web Fetch
+- gemma4:31b-cloud
+- Web Search
+- Web Fetch
+- YouTube
+- Análisis de imágenes
 - CORS
 """
 
 import os
+import re
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from ollama import Client, web_search, web_fetch
 from youtube_transcript_api import YouTubeTranscriptApi
+
 
 # ============================================================
 # FLASK
@@ -32,7 +38,10 @@ CORS(app)
 
 MODEL_NAME = "gemma4:31b-cloud"
 
-OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
+OLLAMA_API_KEY = os.environ.get(
+    "OLLAMA_API_KEY",
+    ""
+).strip()
 
 if not OLLAMA_API_KEY:
     print("ADVERTENCIA: OLLAMA_API_KEY no está configurada.")
@@ -157,6 +166,32 @@ búsqueda web:
 - No conviertas una especulación de una fuente en un hecho.
 - Prioriza fuentes oficiales cuando estén disponibles.
 
+YOUTUBE:
+
+Cuando el usuario proporcione una URL de YouTube y solicite
+resumir, explicar, analizar o conocer el contenido del video:
+
+- Utiliza la herramienta youtube_fetch cuando esté disponible.
+- Utiliza el contenido obtenido por la herramienta como base
+  para responder.
+- No afirmes haber visto un video si únicamente obtuviste una
+  transcripción.
+- No inventes información que no aparezca en el contenido obtenido.
+- Si no existe una transcripción disponible, informa claramente
+  que no fue posible obtener el contenido del video.
+- Si la herramienta devuelve un error, informa al usuario de forma
+  clara y no inventes el contenido.
+
+PÁGINAS WEB:
+
+Cuando el usuario proporcione una URL de una página web y solicite
+analizarla, resumirla o explicar su contenido:
+
+- Utiliza web_fetch cuando sea apropiado.
+- Basa la respuesta en el contenido realmente obtenido.
+- Si no puedes acceder a la página, dilo claramente.
+- No inventes el contenido de una página que no pudiste consultar.
+
 FORMA DE RESPONDER:
 
 - Prioriza la respuesta directa.
@@ -280,9 +315,10 @@ Debe ser:
 Evita sonar robótico o excesivamente corporativo.
 
 No utilices frases repetitivas como:
+
 "Como inteligencia artificial..."
 "Estoy aquí para ayudarte..."
-"Por supuesto..." 
+"Por supuesto..."
 
 salvo que realmente aporten algo a la respuesta.
 
@@ -298,24 +334,14 @@ Si sabes la respuesta, responde.
 Si necesitas información actualizada, utiliza las herramientas web.
 
 Si no sabes la respuesta, dilo claramente.
-
-YOUTUBE:
-
-Cuando el usuario proporcione una URL de YouTube y solicite
-resumir, explicar, analizar o conocer el contenido del video,
-utiliza la herramienta youtube_fetch cuando esté disponible.
-
-No afirmes haber visto un video si no pudiste obtener su contenido.
-
-Si no existe una transcripción disponible, informa al usuario
-claramente que no fue posible obtener el contenido del video.
 """
+
 
 # ============================================================
 # YOUTUBE
 # ============================================================
 
-def youtube_fetch(url):
+def youtube_fetch(url: str) -> str:
     """
     Obtiene la transcripción disponible de un video de YouTube.
     """
@@ -331,6 +357,7 @@ def youtube_fetch(url):
     video_id = match.group(1)
 
     try:
+
         api = YouTubeTranscriptApi()
 
         transcript = api.fetch(video_id)
@@ -341,13 +368,17 @@ def youtube_fetch(url):
         )
 
         if not text.strip():
-            return "El video no tiene una transcripción disponible."
+            return (
+                "El video no tiene una transcripción disponible."
+            )
 
         return text[:12000]
 
     except Exception as error:
+
         return (
-            "No pude obtener la transcripción de este video de YouTube. "
+            "No pude obtener la transcripción de este video "
+            "de YouTube. "
             f"Error: {error}"
         )
 
@@ -363,29 +394,35 @@ available_tools = {
 }
 
 
-
-
 # ============================================================
 # CONSTRUIR MENSAJES
 # ============================================================
 
-def build_messages(history, custom_instructions=None):
+def build_messages(
+    history,
+    custom_instructions=None
+):
+
     messages = []
 
-    system_prompt = """
-Eres NexusAI, un asistente útil, preciso y natural.
+    system_prompt = NEXUSAI_SYSTEM_PROMPT + """
 
-Puedes analizar imágenes que el usuario adjunte.
+También puedes analizar imágenes que el usuario adjunte.
+
 Cuando recibas una imagen:
+
 - Analiza únicamente lo que realmente puedas observar.
 - No inventes detalles.
-- Si algo no es visible o no puedes determinarlo, dilo claramente.
+- Si algo no es visible o no puedes determinarlo,
+  dilo claramente.
 """
 
     if custom_instructions:
+
         system_prompt += f"""
 
-Preferencias del usuario:
+PREFERENCIAS DEL USUARIO:
+
 {custom_instructions}
 """
 
@@ -395,14 +432,22 @@ Preferencias del usuario:
     })
 
     for item in history:
+
         message = {
-            "role": item.get("role", "user"),
-            "content": item.get("content", "")
+            "role": item.get(
+                "role",
+                "user"
+            ),
+            "content": item.get(
+                "content",
+                ""
+            )
         }
 
         images = item.get("images")
 
         if images:
+
             message["images"] = images
 
         messages.append(message)
@@ -418,35 +463,18 @@ def run_agent(messages):
 
     final_text = ""
 
+    tools = [
+        web_search,
+        web_fetch,
+        youtube_fetch
+    ]
+
     while True:
 
         response = ollama_client.chat(
             model=MODEL_NAME,
             messages=messages,
-            tools=[
-    web_search,
-    web_fetch,
-    {
-        "type": "function",
-        "function": {
-            "name": "youtube_fetch",
-            "description": (
-                "Obtiene la transcripción de un video de YouTube "
-                "cuando el usuario proporciona una URL de YouTube."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL del video de YouTube"
-                    }
-                },
-                "required": ["url"]
-            }
-        }
-    }
-],
+            tools=tools,
             think=True,
             options={
                 "num_ctx": 32000
@@ -454,6 +482,7 @@ def run_agent(messages):
         )
 
         if response.message.content:
+
             final_text = response.message.content
 
         messages.append(response.message)
@@ -468,17 +497,62 @@ def run_agent(messages):
                     function_name
                 )
 
+                if function_to_call:
+
+                    args = tool_call.function.arguments
+
+                    try:
+
+                        result = function_to_call(
+                            **args
+                        )
+
+                        result_text = str(
+                            result
+                        )[:12000]
+
+                    except Exception as error:
+
+                        result_text = (
+                            "Error ejecutando la herramienta: "
+                            f"{error}"
+                        )
+
+                else:
+
+                    result_text = (
+                        f"Herramienta "
+                        f"{function_name} no encontrada"
+                    )
+
+                messages.append({
+                    "role": "tool",
+                    "content": result_text,
+                    "tool_name": function_name
+                })
+
+        else:
+
+            break
+
+    return final_text
+
 
 # ============================================================
 # API CHAT
 # ============================================================
 
-@app.route("/api/chat", methods=["POST"])
+@app.route(
+    "/api/chat",
+    methods=["POST"]
+)
 def api_chat():
 
     try:
 
-        data = request.get_json(force=True) or {}
+        data = request.get_json(
+            force=True
+        ) or {}
 
         history = data.get(
             "history",
@@ -502,7 +576,9 @@ def api_chat():
                 "message": "No hay mensajes para procesar"
             }), 400
 
-        final_text = run_agent(messages)
+        final_text = run_agent(
+            messages
+        )
 
         return jsonify({
             "success": True,
@@ -526,7 +602,10 @@ def api_chat():
 # HEALTH CHECK
 # ============================================================
 
-@app.route("/api/health", methods=["GET"])
+@app.route(
+    "/api/health",
+    methods=["GET"]
+)
 def health():
 
     return jsonify({
