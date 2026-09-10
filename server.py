@@ -344,10 +344,12 @@ Si no sabes la respuesta, dilo claramente.
 def youtube_fetch(url: str) -> str:
     """
     Obtiene la transcripción disponible de un video de YouTube.
+    Intenta español e inglés antes de utilizar cualquier otra
+    transcripción disponible.
     """
 
     match = re.search(
-        r"(?:youtube\.com/watch\?v=|youtu\.be/)([A-Za-z0-9_-]{11})",
+        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
         url
     )
 
@@ -360,26 +362,84 @@ def youtube_fetch(url: str) -> str:
 
         api = YouTubeTranscriptApi()
 
-        transcript = api.fetch(video_id)
+        transcript_list = api.list(video_id)
+
+        # ----------------------------------------------------
+        # Buscar primero español
+        # ----------------------------------------------------
+
+        try:
+
+            transcript = transcript_list.find_transcript(
+                ["es", "es-419", "en"]
+            )
+
+        except Exception:
+
+            transcript = None
+
+        # ----------------------------------------------------
+        # Si no encontramos una preferida,
+        # utilizar cualquier transcripción disponible
+        # ----------------------------------------------------
+
+        if transcript is None:
+
+            transcripts = list(
+                transcript_list
+            )
+
+            if not transcripts:
+                return (
+                    "El video no tiene ninguna "
+                    "transcripción disponible."
+                )
+
+            transcript = transcripts[0]
+
+        # ----------------------------------------------------
+        # Obtener contenido
+        # ----------------------------------------------------
+
+        fetched = transcript.fetch()
+
+        text_parts = []
+
+        for snippet in fetched:
+
+            text = getattr(
+                snippet,
+                "text",
+                ""
+            )
+
+            if text:
+                text_parts.append(text)
 
         text = " ".join(
-            snippet.text
-            for snippet in transcript
+            text_parts
         )
 
         if not text.strip():
+
             return (
-                "El video no tiene una transcripción disponible."
+                "La transcripción existe, "
+                "pero no contiene texto."
             )
 
         return text[:12000]
 
     except Exception as error:
 
+        print(
+            "Error obteniendo YouTube:",
+            repr(error)
+        )
+
         return (
-            "No pude obtener la transcripción de este video "
-            "de YouTube. "
-            f"Error: {error}"
+            "No pude obtener la transcripción "
+            "de este video de YouTube. "
+            f"Error técnico: {error}"
         )
 
 
