@@ -311,17 +311,6 @@ Si no existe una transcripción disponible, informa al usuario
 claramente que no fue posible obtener el contenido del video.
 """
 
-
-# ============================================================
-# HERRAMIENTAS
-# ============================================================
-
-available_tools = {
-    "web_search": web_search,
-    "web_fetch": web_fetch,
-    "youtube_fetch": youtube_fetch
-}
-
 # ============================================================
 # YOUTUBE
 # ============================================================
@@ -361,6 +350,19 @@ def youtube_fetch(url):
             "No pude obtener la transcripción de este video de YouTube. "
             f"Error: {error}"
         )
+
+
+# ============================================================
+# HERRAMIENTAS
+# ============================================================
+
+available_tools = {
+    "web_search": web_search,
+    "web_fetch": web_fetch,
+    "youtube_fetch": youtube_fetch
+}
+
+
 
 
 # ============================================================
