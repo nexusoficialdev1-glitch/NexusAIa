@@ -29,14 +29,35 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 app = Flask(__name__)
 
-CORS(app)
+# ------------------------------------------------------------
+# CORS
+# ------------------------------------------------------------
+# Por defecto queda abierto ("*") para no romper tu setup actual,
+# pero se recomienda fuertemente restringirlo definiendo la
+# variable de entorno ALLOWED_ORIGINS con tu(s) dominio(s) real(es),
+# separados por coma. Ejemplo:
+#   ALLOWED_ORIGINS=https://tuapp.com,https://www.tuapp.com
+# Dejarlo en "*" con tu OLLAMA_API_KEY detrás del endpoint permite
+# que cualquiera consuma tu cuota desde otro sitio.
+
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+
+if _allowed_origins_env:
+    _origins = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+    CORS(app, origins=_origins)
+else:
+    print(
+        "ADVERTENCIA: ALLOWED_ORIGINS no está configurada, "
+        "CORS quedará abierto a cualquier origen ('*')."
+    )
+    CORS(app)
 
 
 # ============================================================
 # CONFIGURACIÓN OLLAMA CLOUD
 # ============================================================
 
-MODEL_NAME = "gemma4:31b-cloud"
+MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
 
 OLLAMA_API_KEY = os.environ.get(
     "OLLAMA_API_KEY",
@@ -53,6 +74,61 @@ ollama_client = Client(
         "Authorization": f"Bearer {OLLAMA_API_KEY}"
     }
 )
+
+
+# ============================================================
+# CONFIGURACIÓN PROXY PARA YOUTUBE (opcional pero recomendado)
+# ============================================================
+#
+# YouTube bloquea la gran mayoría de IPs de proveedores cloud
+# (Render, AWS, GCP, Azure, Railway, Vercel, etc.). Si despliegas
+# este backend en uno de esos proveedores, youtube_transcript_api
+# fallará casi siempre con RequestBlocked / IpBlocked a menos que
+# uses un proxy (idealmente residencial rotativo, p. ej. Webshare).
+#
+# Si defines las siguientes variables de entorno, se usará
+# automáticamente un proxy vía Webshare. Si no las defines, se
+# intentará sin proxy (funcionará en local, probablemente NO en
+# Render).
+#
+#   WEBSHARE_PROXY_USERNAME
+#   WEBSHARE_PROXY_PASSWORD
+#
+# Puedes cambiar de proveedor de proxy editando _build_youtube_api()
+# más abajo; youtube_transcript_api también soporta un
+# GenericProxyConfig con cualquier proxy http/https/socks.
+
+WEBSHARE_PROXY_USERNAME = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
+WEBSHARE_PROXY_PASSWORD = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
+
+
+def _build_youtube_api():
+    """
+    Construye una instancia de YouTubeTranscriptApi, usando proxy
+    de Webshare si las credenciales están configuradas.
+    """
+
+    if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD:
+
+        try:
+
+            from youtube_transcript_api.proxies import WebshareProxyConfig
+
+            return YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=WEBSHARE_PROXY_USERNAME,
+                    proxy_password=WEBSHARE_PROXY_PASSWORD,
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "No se pudo inicializar el proxy de Webshare, "
+                f"se continuará sin proxy: {error}"
+            )
+
+    return YouTubeTranscriptApi()
 
 
 # ============================================================
@@ -360,7 +436,7 @@ def youtube_fetch(url: str) -> str:
 
     try:
 
-        api = YouTubeTranscriptApi()
+        api = _build_youtube_api()
 
         transcript_list = api.list(video_id)
 
@@ -431,10 +507,25 @@ def youtube_fetch(url: str) -> str:
 
     except Exception as error:
 
+        error_name = type(error).__name__
+
         print(
             "Error obteniendo YouTube:",
             repr(error)
         )
+
+        if error_name in ("RequestBlocked", "IpBlocked"):
+
+            return (
+                "No pude obtener la transcripción de este video "
+                "porque YouTube está bloqueando las peticiones "
+                "desde el servidor (es común en proveedores cloud "
+                "como Render). Para solucionarlo de forma "
+                "permanente hace falta configurar un proxy "
+                "(por ejemplo Webshare) mediante las variables de "
+                "entorno WEBSHARE_PROXY_USERNAME y "
+                "WEBSHARE_PROXY_PASSWORD."
+            )
 
         return (
             "No pude obtener la transcripción "
@@ -477,13 +568,29 @@ Cuando recibas una imagen:
   dilo claramente.
 """
 
+    # custom_instructions puede llegar como string, dict, lista o
+    # None dependiendo del cliente. Lo normalizamos siempre a texto
+    # legible antes de insertarlo en el prompt.
     if custom_instructions:
 
-        system_prompt += f"""
+        if isinstance(custom_instructions, str):
+            custom_instructions_text = custom_instructions
+        elif isinstance(custom_instructions, dict):
+            custom_instructions_text = "\n".join(
+                f"- {key}: {value}"
+                for key, value in custom_instructions.items()
+                if value not in (None, "", [])
+            )
+        else:
+            custom_instructions_text = str(custom_instructions)
+
+        if custom_instructions_text.strip():
+
+            system_prompt += f"""
 
 PREFERENCIAS DEL USUARIO:
 
-{custom_instructions}
+{custom_instructions_text}
 """
 
     messages.append({
@@ -654,7 +761,7 @@ def api_chat():
 
         return jsonify({
             "success": False,
-            "message": str(error)
+            "message": "Ocurrió un error interno procesando la solicitud."
         }), 500
 
 
