@@ -98,35 +98,71 @@ ollama_client = Client(
 # más abajo; youtube_transcript_api también soporta un
 # GenericProxyConfig con cualquier proxy http/https/socks.
 
-WEBSHARE_PROXY_USERNAME = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
-WEBSHARE_PROXY_PASSWORD = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
+WEBSHARE_PROXY_USERNAME = os.environ.get(
+    "WEBSHARE_PROXY_USERNAME",
+    ""
+).strip()
+
+WEBSHARE_PROXY_PASSWORD = os.environ.get(
+    "WEBSHARE_PROXY_PASSWORD",
+    ""
+).strip()
+
+WEBSHARE_PROXY_HOST = os.environ.get(
+    "WEBSHARE_PROXY_HOST",
+    ""
+).strip()
+
+WEBSHARE_PROXY_PORT = os.environ.get(
+    "WEBSHARE_PROXY_PORT",
+    ""
+).strip()
 
 
 def _build_youtube_api():
     """
-    Construye una instancia de YouTubeTranscriptApi, usando proxy
-    de Webshare si las credenciales están configuradas.
+    Construye YouTubeTranscriptApi usando un proxy HTTP de Webshare.
+    Compatible con los proxies directos del plan Free.
     """
 
-    if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD:
+    if (
+        WEBSHARE_PROXY_USERNAME
+        and WEBSHARE_PROXY_PASSWORD
+        and WEBSHARE_PROXY_HOST
+        and WEBSHARE_PROXY_PORT
+    ):
 
         try:
 
-            from youtube_transcript_api.proxies import WebshareProxyConfig
+            from youtube_transcript_api.proxies import GenericProxyConfig
+
+            proxy_url = (
+                f"http://{WEBSHARE_PROXY_USERNAME}:"
+                f"{WEBSHARE_PROXY_PASSWORD}@"
+                f"{WEBSHARE_PROXY_HOST}:"
+                f"{WEBSHARE_PROXY_PORT}"
+            )
 
             return YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=WEBSHARE_PROXY_USERNAME,
-                    proxy_password=WEBSHARE_PROXY_PASSWORD,
+                proxy_config=GenericProxyConfig(
+                    http_url=proxy_url,
+                    https_url=proxy_url
                 )
             )
 
         except Exception as error:
 
             print(
-                "No se pudo inicializar el proxy de Webshare, "
-                f"se continuará sin proxy: {error}"
+                "No se pudo inicializar el proxy de Webshare:",
+                error
             )
+
+    else:
+
+        print(
+            "ADVERTENCIA: faltan variables de Webshare. "
+            "Se intentará acceder a YouTube sin proxy."
+        )
 
     return YouTubeTranscriptApi()
 
