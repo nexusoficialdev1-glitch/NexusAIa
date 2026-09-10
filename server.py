@@ -30,7 +30,7 @@ CORS(app)
 # CONFIGURACIÓN OLLAMA CLOUD
 # ============================================================
 
-MODEL_NAME = "gpt-oss:120b-cloud"
+MODEL_NAME = "gemma4:31b-cloud"
 
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
 
