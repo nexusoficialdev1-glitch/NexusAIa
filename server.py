@@ -15,7 +15,7 @@ import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from ollama import Client, web_search, web_fetch
-
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # ============================================================
 # FLASK
@@ -298,6 +298,17 @@ Si sabes la respuesta, responde.
 Si necesitas información actualizada, utiliza las herramientas web.
 
 Si no sabes la respuesta, dilo claramente.
+
+YOUTUBE:
+
+Cuando el usuario proporcione una URL de YouTube y solicite
+resumir, explicar, analizar o conocer el contenido del video,
+utiliza la herramienta youtube_fetch cuando esté disponible.
+
+No afirmes haber visto un video si no pudiste obtener su contenido.
+
+Si no existe una transcripción disponible, informa al usuario
+claramente que no fue posible obtener el contenido del video.
 """
 
 
@@ -307,8 +318,49 @@ Si no sabes la respuesta, dilo claramente.
 
 available_tools = {
     "web_search": web_search,
-    "web_fetch": web_fetch
+    "web_fetch": web_fetch,
+    "youtube_fetch": youtube_fetch
 }
+
+# ============================================================
+# YOUTUBE
+# ============================================================
+
+def youtube_fetch(url):
+    """
+    Obtiene la transcripción disponible de un video de YouTube.
+    """
+
+    match = re.search(
+        r"(?:youtube\.com/watch\?v=|youtu\.be/)([A-Za-z0-9_-]{11})",
+        url
+    )
+
+    if not match:
+        return "No pude identificar un ID válido de YouTube."
+
+    video_id = match.group(1)
+
+    try:
+        api = YouTubeTranscriptApi()
+
+        transcript = api.fetch(video_id)
+
+        text = " ".join(
+            snippet.text
+            for snippet in transcript
+        )
+
+        if not text.strip():
+            return "El video no tiene una transcripción disponible."
+
+        return text[:12000]
+
+    except Exception as error:
+        return (
+            "No pude obtener la transcripción de este video de YouTube. "
+            f"Error: {error}"
+        )
 
 
 # ============================================================
@@ -370,9 +422,29 @@ def run_agent(messages):
             model=MODEL_NAME,
             messages=messages,
             tools=[
-                web_search,
-                web_fetch
-            ],
+    web_search,
+    web_fetch,
+    {
+        "type": "function",
+        "function": {
+            "name": "youtube_fetch",
+            "description": (
+                "Obtiene la transcripción de un video de YouTube "
+                "cuando el usuario proporciona una URL de YouTube."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL del video de YouTube"
+                    }
+                },
+                "required": ["url"]
+            }
+        }
+    }
+],
             think=True,
             options={
                 "num_ctx": 32000
@@ -393,46 +465,6 @@ def run_agent(messages):
                 function_to_call = available_tools.get(
                     function_name
                 )
-
-                if function_to_call:
-
-                    args = tool_call.function.arguments
-
-                    try:
-
-                        result = function_to_call(**args)
-
-                        result_text = str(result)[:8000]
-
-                    except Exception as error:
-
-                        result_text = (
-                            f"Error ejecutando la herramienta: "
-                            f"{error}"
-                        )
-
-                    messages.append({
-                        "role": "tool",
-                        "content": result_text,
-                        "tool_name": function_name
-                    })
-
-                else:
-
-                    messages.append({
-                        "role": "tool",
-                        "content": (
-                            f"Herramienta "
-                            f"{function_name} no encontrada"
-                        ),
-                        "tool_name": function_name
-                    })
-
-        else:
-
-            break
-
-    return final_text
 
 
 # ============================================================
