@@ -315,61 +315,43 @@ available_tools = {
 # CONSTRUIR MENSAJES
 # ============================================================
 
-def build_messages(history, custom_instructions):
-
+def build_messages(history, custom_instructions=None):
     messages = []
 
-    custom_instructions = custom_instructions or {}
+    system_prompt = """
+Eres NexusAI, un asistente útil, preciso y natural.
 
-    nickname = (
-        custom_instructions
-        .get("nickname", "")
-        .strip()
-    )
-
-    instructions = (
-        custom_instructions
-        .get("instructions", "")
-        .strip()
-    )
-
-    system_parts = [
-        NEXUSAI_SYSTEM_PROMPT
-    ]
-
-    if nickname:
-        system_parts.append(
-            f"El usuario prefiere que lo llames {nickname}."
-        )
-
-    if instructions:
-        system_parts.append(
-            f"""
-INSTRUCCIONES PERSONALIZADAS DEL USUARIO:
-
-{instructions}
-
-Estas instrucciones deben respetar las reglas generales
-y de seguridad de NexusAI.
+Puedes analizar imágenes que el usuario adjunte.
+Cuando recibas una imagen:
+- Analiza únicamente lo que realmente puedas observar.
+- No inventes detalles.
+- Si algo no es visible o no puedes determinarlo, dilo claramente.
 """
-        )
+
+    if custom_instructions:
+        system_prompt += f"""
+
+Preferencias del usuario:
+{custom_instructions}
+"""
 
     messages.append({
         "role": "system",
-        "content": "\n\n".join(system_parts)
+        "content": system_prompt
     })
 
-    for item in history or []:
+    for item in history:
+        message = {
+            "role": item.get("role", "user"),
+            "content": item.get("content", "")
+        }
 
-        role = item.get("role")
-        content = item.get("content", "")
+        images = item.get("images")
 
-        if role in ("user", "assistant") and content:
+        if images:
+            message["images"] = images
 
-            messages.append({
-                "role": role,
-                "content": content
-            })
+        messages.append(message)
 
     return messages
 
