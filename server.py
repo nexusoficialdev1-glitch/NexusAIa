@@ -54,7 +54,7 @@ else:
 # CONFIGURACIÓN OLLAMA CLOUD
 # ============================================================
 
-MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma3:27b-cloud")
+MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
 
 if not OLLAMA_API_KEY:
