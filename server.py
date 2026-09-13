@@ -6,18 +6,19 @@ Backend del chatbot de NexusAI.
 Preparado para:
 - Render
 - Ollama Cloud
-- gemma3:27b-cloud
+- gemma4:31b-cloud
 - Web Search
 - Web Fetch
 - YouTube (via Supadata API)
 - Búsqueda de imágenes
-- Análisis de imágenes
+- Análisis de imágenes (usuario adjunta)
 - CORS
 """
 
 import os
 import re
 import time
+import base64
 import traceback
 from urllib.parse import quote
 
@@ -33,6 +34,9 @@ from ollama import Client, web_search, web_fetch
 # ============================================================
 
 app = Flask(__name__)
+
+# Tamaño máximo de body: 20 MB (por si suben imágenes grandes)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 
 # ============================================================
@@ -291,10 +295,53 @@ available_tools = {
 
 
 # ============================================================
+# VALIDAR IMAGEN BASE64
+# ============================================================
+
+def validar_imagen_base64(image_base64: str):
+    """
+    Valida y normaliza la imagen en base64.
+    Devuelve la cadena limpia (sin prefijo data:image/...) o None si es inválida.
+    """
+
+    if not image_base64 or not isinstance(image_base64, str):
+        return None
+
+    # Quitar prefijo "data:image/jpeg;base64," si viene
+    if image_base64.startswith("data:"):
+        try:
+            image_base64 = image_base64.split(",", 1)[1]
+        except IndexError:
+            return None
+
+    # Quitar espacios/saltos de línea
+    image_base64 = image_base64.strip().replace("\n", "").replace("\r", "")
+
+    # Tamaño máximo: 8 MB en base64 ≈ 6 MB de imagen real
+    if len(image_base64) > 8 * 1024 * 1024:
+        return None
+
+    # Verificar que sea base64 válido (al menos decodificable)
+    try:
+        base64.b64decode(image_base64[:100] + "==")
+    except Exception:
+        return None
+
+    return image_base64
+
+
+# ============================================================
 # CONSTRUIR MENSAJES
 # ============================================================
 
-def build_messages(history, custom_instructions=None):
+def build_messages(history, custom_instructions=None, user_image_base64=None):
+    """
+    Construye la lista de mensajes para Ollama.
+
+    Si user_image_base64 viene, se agrega al ÚLTIMO mensaje del usuario
+    como message["images"] = [base64].
+    """
+
     messages = []
 
     system_prompt = NEXUSAI_SYSTEM_PROMPT + """
@@ -306,6 +353,8 @@ Cuando recibas una imagen:
 - Analiza únicamente lo que realmente puedas observar.
 - No inventes detalles.
 - Si algo no es visible, dilo claramente.
+- Si el usuario no dio ninguna instrucción con la imagen,
+  descríbela de forma útil.
 """
 
     if custom_instructions:
@@ -330,12 +379,20 @@ PREFERENCIAS DEL USUARIO:
 
     messages.append({"role": "system", "content": system_prompt})
 
-    for item in history:
+    # ------------------------------------------------
+    # HISTORIAL
+    # ------------------------------------------------
+    for idx, item in enumerate(history):
         message = {
             "role": item.get("role", "user"),
             "content": item.get("content", "")
         }
 
+        # Limpiar el placeholder "[Imagen]" que manda la app
+        if message["content"] == "[Imagen]":
+            message["content"] = "Analiza esta imagen."
+
+        # Imágenes encontradas por image_search (solo contexto textual)
         images = item.get("images")
         if images:
             image_urls = []
@@ -354,6 +411,15 @@ PREFERENCIAS DEL USUARIO:
                     + "\n".join(f"- {u}" for u in image_urls)
                 )
                 message["content"] = existing_content + image_context
+
+        # ------------------------------------------------
+        # IMAGEN ADJUNTA (solo en el último mensaje del usuario)
+        # ------------------------------------------------
+        es_ultimo = (idx == len(history) - 1)
+        if es_ultimo and user_image_base64 and message["role"] == "user":
+            message["images"] = [user_image_base64]
+            if not message["content"] or message["content"] == "Analiza esta imagen.":
+                message["content"] = "Analiza esta imagen."
 
         messages.append(message)
 
@@ -458,7 +524,16 @@ def api_chat():
 
         custom_instructions = data.get("custom_instructions", {})
 
-        print(f"[api_chat] history len={len(history)}")
+        # ------------------------------------------------
+        # IMAGEN ADJUNTA (opcional)
+        # ------------------------------------------------
+        raw_image = data.get("image_base64")
+        user_image_base64 = validar_imagen_base64(raw_image) if raw_image else None
+
+        if raw_image and not user_image_base64:
+            print("[api_chat] Imagen base64 rechazada (inválida o demasiado grande)")
+
+        print(f"[api_chat] history len={len(history)} imagen={'sí' if user_image_base64 else 'no'}")
 
         if not history:
             return jsonify({
@@ -466,7 +541,11 @@ def api_chat():
                 "message": "No hay mensajes para procesar"
             }), 400
 
-        messages = build_messages(history, custom_instructions)
+        messages = build_messages(
+            history,
+            custom_instructions,
+            user_image_base64=user_image_base64
+        )
         result = run_agent(messages)
 
         text = (result.get("text") or "").strip()
@@ -474,7 +553,6 @@ def api_chat():
         print(f"[api_chat] respuesta len={len(text)} imágenes={len(result.get('images', []))}")
 
         if not text:
-            # El modelo no devolvió nada útil
             return jsonify({
                 "success": False,
                 "message": (
