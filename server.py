@@ -12,6 +12,7 @@ Preparado para:
 - YouTube (via Supadata API)
 - Búsqueda de imágenes
 - Análisis de imágenes (usuario adjunta)
+- Notificaciones push (FCM)
 - CORS
 """
 
@@ -60,7 +61,7 @@ MODEL_NAME = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
 
 if not OLLAMA_API_KEY:
-    print("ADVERTENCIA: OLLAMA_API_KEY no está configurada. Las respuestas fallarán.")
+    print("ADVERTENCIA: OLLAMA_API_KEY no está configurada.")
 else:
     print(f"OLLAMA_API_KEY configurada. Modelo: {MODEL_NAME}")
 
@@ -69,6 +70,42 @@ ollama_client = Client(
     host="https://ollama.com",
     headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"}
 )
+
+
+# ============================================================
+# FIREBASE ADMIN (para notificaciones)
+# ============================================================
+
+firebase_initialized = False
+
+try:
+    import firebase_admin
+    from firebase_admin import credentials, messaging
+
+    # Buscar el archivo del Service Account en varias rutas posibles
+    _sa_path_candidates = [
+        "firebase-service-account.json",
+        "/etc/secrets/firebase-service-account.json",  # Render Secret Files
+        os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH", ""),
+    ]
+
+    _sa_path = None
+    for _p in _sa_path_candidates:
+        if _p and os.path.isfile(_p):
+            _sa_path = _p
+            break
+
+    if _sa_path:
+        cred = credentials.Certificate(_sa_path)
+        firebase_admin.initialize_app(cred)
+        firebase_initialized = True
+        print(f"Firebase Admin inicializado con: {_sa_path}")
+    else:
+        print("ADVERTENCIA: no se encontró firebase-service-account.json. "
+              "Las notificaciones push no funcionarán.")
+
+except Exception as e:
+    print(f"ADVERTENCIA: error inicializando Firebase Admin: {e}")
 
 
 # ============================================================
@@ -327,13 +364,7 @@ def validar_imagen_base64(image_base64: str):
 # ============================================================
 
 def build_messages(history, custom_instructions=None, user_image_base64=None):
-    """
-    Construye la lista de mensajes para Ollama.
-
-    Soporta:
-    - custom_instructions: dict con tone, length, language, concise, bot_name
-    - user_image_base64: imagen adjunta (se agrega al último mensaje del usuario)
-    """
+    """Construye la lista de mensajes para Ollama."""
 
     messages = []
 
@@ -350,16 +381,11 @@ Cuando recibas una imagen:
   descríbela de forma útil.
 """
 
-    # ------------------------------------------------
-    # Preferencias del usuario
-    # ------------------------------------------------
     if custom_instructions:
 
-        # Si es string, lo usamos directamente
         if isinstance(custom_instructions, str):
             custom_instructions_text = custom_instructions
 
-        # Si es dict, extraemos campos concretos
         elif isinstance(custom_instructions, dict):
             partes = []
 
@@ -391,7 +417,6 @@ Cuando recibas una imagen:
                 }
                 partes.append(idioma_map.get(str(language).lower(), f"Idioma: {language}"))
 
-            # NUEVO: Modo conciso
             concise = custom_instructions.get("concise")
             if concise is True:
                 partes.append(
@@ -399,7 +424,6 @@ Cuando recibas una imagen:
                     "no repitas la pregunta, ve al grano, sin relleno."
                 )
 
-            # NUEVO: Nombre personalizado del bot
             bot_name = custom_instructions.get("bot_name")
             if bot_name and isinstance(bot_name, str) and bot_name.strip():
                 partes.append(
@@ -423,9 +447,6 @@ PREFERENCIAS DEL USUARIO:
 
     messages.append({"role": "system", "content": system_prompt})
 
-    # ------------------------------------------------
-    # HISTORIAL
-    # ------------------------------------------------
     for idx, item in enumerate(history):
 
         message = {
@@ -433,11 +454,9 @@ PREFERENCIAS DEL USUARIO:
             "content": item.get("content", "")
         }
 
-        # Placeholder de imagen → texto legible
         if message["content"] == "[Imagen]":
             message["content"] = "Analiza esta imagen."
 
-        # Contexto de imágenes encontradas por image_search
         images = item.get("images")
         if images:
             image_urls = []
@@ -457,7 +476,6 @@ PREFERENCIAS DEL USUARIO:
                 )
                 message["content"] = existing_content + image_context
 
-        # Imagen adjunta (solo en el último mensaje del usuario)
         es_ultimo = (idx == len(history) - 1)
         if es_ultimo and user_image_base64 and message["role"] == "user":
             message["images"] = [user_image_base64]
@@ -520,7 +538,6 @@ def run_agent(messages):
         else:
             break
 
-    # Deduplicar imágenes
     unique_images = []
     seen_urls = set()
 
@@ -545,6 +562,67 @@ def run_agent(messages):
 
 
 # ============================================================
+# NOTIFICACIONES PUSH (FCM)
+# ============================================================
+
+def send_push_notification(fcm_token, title, body, data=None):
+    """Envía una notificación push a un dispositivo vía FCM."""
+
+    if not firebase_initialized:
+        print("[FCM] Firebase Admin no está inicializado, no se envía notificación")
+        return False
+
+    if not fcm_token:
+        print("[FCM] Token vacío, no se envía notificación")
+        return False
+
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=body
+            ),
+            data=data or {},
+            token=fcm_token,
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="apex_messages",
+                    sound="default"
+                )
+            )
+        )
+
+        response = messaging.send(message)
+        print(f"[FCM] Notificación enviada: {response}")
+        return True
+
+    except messaging.UnregisteredError:
+        print("[FCM] Token inválido o expirado")
+        return False
+
+    except Exception as e:
+        print(f"[FCM] Error enviando notificación: {e}")
+        return False
+
+
+def get_user_fcm_token(uid):
+    """Obtiene el token FCM del usuario desde Firestore."""
+    if not firebase_initialized:
+        return None
+    try:
+        from firebase_admin import firestore
+        db = firestore.client()
+        doc = db.collection("users").document(uid) \
+            .collection("settings").document("app").get()
+        if doc.exists:
+            return doc.to_dict().get("fcmToken")
+    except Exception as e:
+        print(f"[FCM] Error leyendo token desde Firestore: {e}")
+    return None
+
+
+# ============================================================
 # API CHAT
 # ============================================================
 
@@ -553,7 +631,6 @@ def api_chat():
     try:
         data = request.get_json(force=True) or {}
 
-        # history o message
         history = data.get("history")
 
         if not history:
@@ -564,15 +641,15 @@ def api_chat():
                 history = []
 
         custom_instructions = data.get("custom_instructions", {})
+        uid = data.get("uid")  # ← la app manda el uid para notificar
 
-        # Imagen adjunta
         raw_image = data.get("image_base64")
         user_image_base64 = validar_imagen_base64(raw_image) if raw_image else None
 
         if raw_image and not user_image_base64:
             print("[api_chat] Imagen base64 rechazada (inválida o demasiado grande)")
 
-        print(f"[api_chat] history len={len(history)} imagen={'sí' if user_image_base64 else 'no'}")
+        print(f"[api_chat] history len={len(history)} imagen={'sí' if user_image_base64 else 'no'} uid={uid}")
 
         if not history:
             return jsonify({
@@ -603,6 +680,18 @@ def api_chat():
                 "images": result.get("images", [])
             }), 502
 
+        # --- Notificación push ---
+        if uid:
+            token = get_user_fcm_token(uid)
+            if token:
+                preview = text[:120] + ("…" if len(text) > 120 else "")
+                send_push_notification(
+                    fcm_token=token,
+                    title="ApeX respondió",
+                    body=preview,
+                    data={"type": "chat_reply"}
+                )
+
         return jsonify({
             "success": True,
             "response": text,
@@ -619,6 +708,72 @@ def api_chat():
 
 
 # ============================================================
+# API — ENVIAR NOTIFICACIÓN MANUAL
+# ============================================================
+
+@app.route("/api/send-notification", methods=["POST"])
+def api_send_notification():
+    """
+    Envía una notificación push manual.
+
+    Body esperado:
+    {
+        "uid": "abc123",              # opcional, si querés mandar a un usuario específico
+        "token": "xxxxx",             # opcional, si querés mandar a un token específico
+        "title": "Título",
+        "body": "Mensaje",
+        "data": { ... }               # opcional
+    }
+
+    Si mandás 'uid', busca el token en Firestore.
+    Si mandás 'token' directo, lo usa.
+    Si no mandás ninguno, falla.
+    """
+
+    if not firebase_initialized:
+        return jsonify({
+            "success": False,
+            "message": "Firebase Admin no está inicializado en el servidor."
+        }), 500
+
+    try:
+        data = request.get_json(force=True) or {}
+
+        uid = data.get("uid")
+        token = data.get("token")
+        title = data.get("title", "ApeX")
+        body = data.get("body", "")
+        extra_data = data.get("data", {})
+
+        if not token and uid:
+            token = get_user_fcm_token(uid)
+
+        if not token:
+            return jsonify({
+                "success": False,
+                "message": "No se encontró un token FCM para enviar la notificación."
+            }), 400
+
+        if not body:
+            return jsonify({
+                "success": False,
+                "message": "Falta el campo 'body'."
+            }), 400
+
+        ok = send_push_notification(token, title, body, extra_data)
+
+        if ok:
+            return jsonify({"success": True, "message": "Notificación enviada."})
+        else:
+            return jsonify({"success": False, "message": "Error enviando notificación."}), 500
+
+    except Exception as error:
+        print("Error en /api/send-notification:", repr(error))
+        traceback.print_exc()
+        return jsonify({"success": False, "message": str(error)}), 500
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -629,6 +784,7 @@ def health():
         "service": "NexusAI Chat API",
         "model": MODEL_NAME,
         "ollama_key_set": bool(OLLAMA_API_KEY),
+        "firebase_initialized": firebase_initialized,
     })
 
 
