@@ -34,9 +34,7 @@ from ollama import Client, web_search, web_fetch
 # ============================================================
 
 app = Flask(__name__)
-
-# Tamaño máximo de body: 20 MB (por si suben imágenes grandes)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20 MB
 
 
 # ============================================================
@@ -92,16 +90,17 @@ SUPADATA_POLL_DELAY_SECONDS = 2
 # ============================================================
 
 NEXUSAI_SYSTEM_PROMPT = """
-Eres ApexAI, un asistente de inteligencia artificial creado para
-ayudar al usuario de forma útil, precisa, natural y práctica.
+Eres un asistente de inteligencia artificial creado para ayudar al
+usuario de forma útil, precisa, natural y práctica.
 
 IDENTIDAD:
 
-- Tu nombre es ApexAI.
 - Fuiste creado por Josuexs, un desarrollador venezolano.
 - Si el usuario pregunta quién te creó, responde únicamente:
   "Fui creado por Josuexs, un desarrollador venezolano."
 - No inventes datos sobre el proyecto ni sobre sus creadores.
+- El usuario puede darte un nombre personalizado. Si lo hace,
+  adopta ese nombre como tu identidad y úsalo con naturalidad.
 
 BÚSQUEDA DE IMÁGENES:
 
@@ -299,29 +298,22 @@ available_tools = {
 # ============================================================
 
 def validar_imagen_base64(image_base64: str):
-    """
-    Valida y normaliza la imagen en base64.
-    Devuelve la cadena limpia (sin prefijo data:image/...) o None si es inválida.
-    """
+    """Valida y normaliza la imagen en base64. Devuelve la cadena limpia o None."""
 
     if not image_base64 or not isinstance(image_base64, str):
         return None
 
-    # Quitar prefijo "data:image/jpeg;base64," si viene
     if image_base64.startswith("data:"):
         try:
             image_base64 = image_base64.split(",", 1)[1]
         except IndexError:
             return None
 
-    # Quitar espacios/saltos de línea
     image_base64 = image_base64.strip().replace("\n", "").replace("\r", "")
 
-    # Tamaño máximo: 8 MB en base64 ≈ 6 MB de imagen real
     if len(image_base64) > 8 * 1024 * 1024:
         return None
 
-    # Verificar que sea base64 válido (al menos decodificable)
     try:
         base64.b64decode(image_base64[:100] + "==")
     except Exception:
@@ -338,8 +330,9 @@ def build_messages(history, custom_instructions=None, user_image_base64=None):
     """
     Construye la lista de mensajes para Ollama.
 
-    Si user_image_base64 viene, se agrega al ÚLTIMO mensaje del usuario
-    como message["images"] = [base64].
+    Soporta:
+    - custom_instructions: dict con tone, length, language, concise, bot_name
+    - user_image_base64: imagen adjunta (se agrega al último mensaje del usuario)
     """
 
     messages = []
@@ -357,15 +350,66 @@ Cuando recibas una imagen:
   descríbela de forma útil.
 """
 
+    # ------------------------------------------------
+    # Preferencias del usuario
+    # ------------------------------------------------
     if custom_instructions:
+
+        # Si es string, lo usamos directamente
         if isinstance(custom_instructions, str):
             custom_instructions_text = custom_instructions
+
+        # Si es dict, extraemos campos concretos
         elif isinstance(custom_instructions, dict):
-            custom_instructions_text = "\n".join(
-                f"- {k}: {v}"
-                for k, v in custom_instructions.items()
-                if v not in (None, "", [])
-            )
+            partes = []
+
+            tone = custom_instructions.get("tone")
+            if tone:
+                tono_map = {
+                    "formal": "Usa un tono formal y profesional.",
+                    "casual": "Usa un tono casual, cercano y natural.",
+                    "tecnico": "Usa un tono técnico, preciso, con terminología correcta.",
+                    "divertido": "Usa un tono divertido, con humor ligero cuando encaje."
+                }
+                partes.append(tono_map.get(str(tone).lower(), f"Tono: {tone}"))
+
+            length = custom_instructions.get("length")
+            if length:
+                longitud_map = {
+                    "corta": "Da respuestas cortas y directas, sin rodeos.",
+                    "media": "Da respuestas de longitud media, claras y completas.",
+                    "larga": "Da respuestas extensas y detalladas cuando sea útil."
+                }
+                partes.append(longitud_map.get(str(length).lower(), f"Longitud: {length}"))
+
+            language = custom_instructions.get("language")
+            if language and language != "auto":
+                idioma_map = {
+                    "es": "Responde siempre en español.",
+                    "en": "Always respond in English.",
+                    "pt": "Responda sempre em português."
+                }
+                partes.append(idioma_map.get(str(language).lower(), f"Idioma: {language}"))
+
+            # NUEVO: Modo conciso
+            concise = custom_instructions.get("concise")
+            if concise is True:
+                partes.append(
+                    "Modo conciso activado: sé directo, evita introducciones, "
+                    "no repitas la pregunta, ve al grano, sin relleno."
+                )
+
+            # NUEVO: Nombre personalizado del bot
+            bot_name = custom_instructions.get("bot_name")
+            if bot_name and isinstance(bot_name, str) and bot_name.strip():
+                partes.append(
+                    f"El usuario te llama '{bot_name.strip()}'. "
+                    f"Adopta ese nombre como tu identidad cuando te presentes "
+                    f"o cuando el usuario se refiera a ti."
+                )
+
+            custom_instructions_text = "\n".join(f"- {p}" for p in partes if p)
+
         else:
             custom_instructions_text = str(custom_instructions)
 
@@ -383,16 +427,17 @@ PREFERENCIAS DEL USUARIO:
     # HISTORIAL
     # ------------------------------------------------
     for idx, item in enumerate(history):
+
         message = {
             "role": item.get("role", "user"),
             "content": item.get("content", "")
         }
 
-        # Limpiar el placeholder "[Imagen]" que manda la app
+        # Placeholder de imagen → texto legible
         if message["content"] == "[Imagen]":
             message["content"] = "Analiza esta imagen."
 
-        # Imágenes encontradas por image_search (solo contexto textual)
+        # Contexto de imágenes encontradas por image_search
         images = item.get("images")
         if images:
             image_urls = []
@@ -412,9 +457,7 @@ PREFERENCIAS DEL USUARIO:
                 )
                 message["content"] = existing_content + image_context
 
-        # ------------------------------------------------
-        # IMAGEN ADJUNTA (solo en el último mensaje del usuario)
-        # ------------------------------------------------
+        # Imagen adjunta (solo en el último mensaje del usuario)
         es_ultimo = (idx == len(history) - 1)
         if es_ultimo and user_image_base64 and message["role"] == "user":
             message["images"] = [user_image_base64]
@@ -510,9 +553,7 @@ def api_chat():
     try:
         data = request.get_json(force=True) or {}
 
-        # ------------------------------------------------
-        # Acepta "history" (preferido) o "message" (compat)
-        # ------------------------------------------------
+        # history o message
         history = data.get("history")
 
         if not history:
@@ -524,9 +565,7 @@ def api_chat():
 
         custom_instructions = data.get("custom_instructions", {})
 
-        # ------------------------------------------------
-        # IMAGEN ADJUNTA (opcional)
-        # ------------------------------------------------
+        # Imagen adjunta
         raw_image = data.get("image_base64")
         user_image_base64 = validar_imagen_base64(raw_image) if raw_image else None
 
